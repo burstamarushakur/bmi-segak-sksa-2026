@@ -8,7 +8,7 @@ import {
   getSegakScore,
   getYearFromClassName
 } from './lib/calculations';
-import { Loader2, Save, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+import { Loader2, Save, CheckCircle2, AlertCircle, RefreshCw, XCircle } from 'lucide-react';
 
 const API_URL = "https://script.google.com/macros/s/AKfycbziQkmvtOm-dcKRDFPffpC6hAnrzmb117CBBqtw8p47KtnE6HX5O5VcjM2EIHTIBg8/exec";
 const DEFAULT_PASSWORD = "pjkjba5095";
@@ -57,12 +57,68 @@ export default function App() {
   const [passwordAction, setPasswordAction] = useState<'fill' | 'edit' | null>(null);
   const [targetRowNumber, setTargetRowNumber] = useState<number | null>(null);
 
+  const [classStatusList, setClassStatusList] = useState<any[]>([]);
+  const [loadingStatusSection, setLoadingStatusSection] = useState(false);
+
+  const sortClassesSKB = (classList: string[]) => {
+      const order = ['S', 'K', 'B'];
+      return [...classList].sort((a, b) => {
+          const yearA = parseInt(a);
+          const yearB = parseInt(b);
+          if (yearA !== yearB) return yearA - yearB;
+          const suffixA = a.replace(yearA.toString(), '');
+          const suffixB = b.replace(yearB.toString(), '');
+          return order.indexOf(suffixA) - order.indexOf(suffixB);
+      });
+  };
+
+  const getClassCompletionStatus = (students: any[], yearLevel: number) => {
+      if (students.length === 0) return { bmiComplete: false, segakComplete: false };
+      const bmiComplete = students.every(s => s.tinggi && s.berat);
+      let segakComplete = false;
+      if (yearLevel >= 4) {
+          segakComplete = students.every(s => s.naikTurunBangku && s.tekanTubi && s.ringkukTubiSepara && s.jangkauanMelunjur);
+      }
+      return { bmiComplete, segakComplete };
+  };
+
+  const fetchAllClassStatuses = async () => {
+    setLoadingStatusSection(true);
+    let classList = classes;
+    if (classList.length === 0) {
+        const res = await fetch(`${API_URL}?action=getClasses`);
+        const data = await res.json();
+        classList = (Array.isArray(data) ? data : (data.classes || data.data || []));
+    }
+    
+    const sorted = sortClassesSKB(classList);
+    const statuses = await Promise.all(
+        sorted.map(async (className) => {
+            const res = await fetch(`${API_URL}?action=getStudentsByClass&className=${encodeURIComponent(className)}&pengisian=${selectedPengisian}`);
+            const data = await res.json();
+            const studentsData = Array.isArray(data) ? data : (data.students || data.data || []);
+            const year = parseInt(className);
+            return {
+                className,
+                yearLevel: year,
+                ...getClassCompletionStatus(studentsData, year)
+            };
+        })
+    );
+    setClassStatusList(statuses);
+    setLoadingStatusSection(false);
+  };
+
   const topScrollRef = React.useRef<HTMLDivElement>(null);
   const bottomScrollRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchClasses();
   }, []);
+
+  useEffect(() => {
+    fetchAllClassStatuses();
+  }, [selectedPengisian]);
 
   useEffect(() => {
     const bottomDiv = bottomScrollRef.current;
@@ -713,7 +769,7 @@ const fetchStudents = async (className: string, pengisian: string) => {
         )}
       </main>
 
-      {showPasswordModal && (
+        {showPasswordModal && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-[2px]">
               <div className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col">
                   <div className="bg-blue-800 px-4 py-3 border-b border-blue-900">
@@ -754,7 +810,57 @@ const fetchStudents = async (className: string, pengisian: string) => {
                   </form>
               </div>
           </div>
-      )}
+        )}
+      {/* Bottom Status Section */}
+      <section className="px-4 pb-8">
+        <div className="max-w-7xl mx-auto bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+            <div className="flex flex-col sm:flex-row items-center justify-between mb-6 gap-3">
+                <h2 className="text-lg font-bold text-slate-800 tracking-tight">STATUS PENGISIAN SISTEM BMI 5-9T & SEGAK</h2>
+                <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-3 py-1 rounded-full">Paparan status semasa: Pengisian {selectedPengisian}</span>
+            </div>
+            
+            {loadingStatusSection ? (
+                <div className="flex justify-center p-8 text-slate-500"><Loader2 className="w-6 h-6 animate-spin text-blue-500 mr-2"/> Memuatkan status...</div>
+            ) : (
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                    <table className="w-full text-xs text-left">
+                        <thead className="bg-slate-100 text-slate-600 uppercase font-semibold">
+                            <tr>
+                                <th className="px-4 py-3 border-r border-slate-200">KELAS</th>
+                                <th className="px-4 py-3 border-r border-slate-200">BMI</th>
+                                <th className="px-4 py-3">SEGAK</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {classStatusList.map(status => (
+                                <tr key={status.className} className="hover:bg-slate-50">
+                                    <td className="px-4 py-3 font-bold text-slate-800 border-r border-slate-200">{status.className}</td>
+                                    <td className="px-4 py-3 border-r border-slate-200">
+                                        {status.bmiComplete ? (
+                                            <div className="flex items-center text-emerald-600"><CheckCircle2 className="w-4 h-4 mr-1.5" /> SELESAI PENGISIAN</div>
+                                        ) : (
+                                            <div className="flex items-center text-red-600"><XCircle className="w-4 h-4 mr-1.5" /> BELUM SELESAI PENGISIAN</div>
+                                        )}
+                                    </td>
+                                    <td className="px-4 py-3">
+                                        {status.yearLevel >= 4 ? (
+                                            status.segakComplete ? (
+                                                <div className="flex items-center text-emerald-600"><CheckCircle2 className="w-4 h-4 mr-1.5" /> SELESAI PENGISIAN</div>
+                                            ) : (
+                                                <div className="flex items-center text-red-600"><XCircle className="w-4 h-4 mr-1.5" /> BELUM SELESAI PENGISIAN</div>
+                                            )
+                                        ) : (
+                                            <span className="text-slate-400">-</span>
+                                        )}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </div>
+      </section>
     </div>
   );
 }
