@@ -84,3 +84,9 @@ Jalankan migration `001_segak_schema.sql`, tetapkan nilai `segak_settings.app_pa
 - Tahun 1, 2 dan 3 kini ada butang PDF murid dan `PDF KPM KELAS`.
 - Tahap 1 menggunakan template rasmi Borang BMI 5-9T dua muka surat. Data Tahun 1/2/3 dipetakan ke umur 7/8/9, termasuk Pengisian 1 dan 2, tinggi (m), berat, BMI/status, MyKid, jantina dan telefon penjaga.
 - Edge Function `segak-api` dikemas kini supaya sejarah PDF boleh membaca rekod Tahun 1 hingga Tahun 6. Table/fungsi Portal Koku asal tidak diubah.
+
+## Kemaskini import iDME F1 (22 Sep 2026)
+- Pengisian 1 daripada PDF iDME dibackfill secara **fill-missing sahaja**. Nilai sedia ada tidak ditindih.
+- Tahap 2: PDF iDME hanya melaporkan skor ujian, bukan bacaan asal. Webapp memaparkan `SKOR n` bagi rekod ini dan tidak mereka bacaan.
+- Checklist SEGAK menerima sama ada 4 bacaan asal lengkap atau 4 skor iDME lengkap sebagai rekod selesai.
+- Norma BMI 5-9T ditambah untuk umur 5 dan 6 tahun.

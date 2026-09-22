@@ -50,6 +50,12 @@ interface Student {
   gred: string;
   statusKecergasan: string;
   tarikhUjian?: string;
+  stepScore?: number | string;
+  pushScore?: number | string;
+  curlScore?: number | string;
+  reachScore?: number | string;
+  legacyScoreOnly?: boolean;
+  importNote?: string;
   jantinaPerluSemak?: boolean;
 }
 
@@ -125,6 +131,15 @@ const recomputeStudent = (student: Student, className: string): Student => {
         const result = getOverallSegakResult(Number(jumlahSkor));
         gred = result.gred;
         statusKecergasan = result.status;
+      }
+    } else {
+      const importedScores = [student.stepScore, student.pushScore, student.curlScore, student.reachScore]
+        .map(emptyToNumber);
+      if (importedScores.every(v => v !== null)) {
+        jumlahSkor = emptyToNumber(student.jumlahSkor) ?? (importedScores as number[]).reduce((a,b)=>a+b,0);
+        const result = getOverallSegakResult(Number(jumlahSkor));
+        gred = student.gred || result.gred;
+        statusKecergasan = student.statusKecergasan || result.status;
       }
     }
   }
@@ -299,6 +314,12 @@ export default function App() {
         gred: item.gred || '',
         statusKecergasan: item.statusKecergasan || '',
         tarikhUjian: item.tarikhUjian || '',
+        stepScore: item.stepScore ?? '',
+        pushScore: item.pushScore ?? '',
+        curlScore: item.curlScore ?? '',
+        reachScore: item.reachScore ?? '',
+        legacyScoreOnly: !!item.legacyScoreOnly,
+        importNote: item.importNote || '',
         jantinaPerluSemak: item.jantinaPerluSemak,
       }, className));
       setStudents(normalized);
@@ -527,10 +548,10 @@ export default function App() {
                         <td className="p-2 border border-slate-200 font-semibold bg-blue-50">{student.statusBmi || (student.tinggi&&student.berat&&!student.jantina?'PILIH JANTINA':'-')}</td>
                         {yearLevel >= 4 && <>
                           <td className="p-1 border border-slate-200"><input type="date" value={student.tarikhUjian || ''} onChange={e=>updateStudent(index,'tarikhUjian',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
-                          <td className="p-1 border border-slate-200"><input type="number" value={student.naikTurunBangku} onChange={e=>updateStudent(index,'naikTurunBangku',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
-                          <td className="p-1 border border-slate-200"><input type="number" value={student.tekanTubi} onChange={e=>updateStudent(index,'tekanTubi',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
-                          <td className="p-1 border border-slate-200"><input type="number" value={student.ringkukTubiSepara} onChange={e=>updateStudent(index,'ringkukTubiSepara',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
-                          <td className="p-1 border border-slate-200"><input type="number" step="0.5" value={student.jangkauanMelunjur} onChange={e=>updateStudent(index,'jangkauanMelunjur',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
+                          <td className="p-1 border border-slate-200">{student.legacyScoreOnly && student.naikTurunBangku === '' ? <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-center font-bold text-amber-800">SKOR {student.stepScore}</div> : <input type="number" value={student.naikTurunBangku} onChange={e=>updateStudent(index,'naikTurunBangku',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/>}</td>
+                          <td className="p-1 border border-slate-200">{student.legacyScoreOnly && student.tekanTubi === '' ? <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-center font-bold text-amber-800">SKOR {student.pushScore}</div> : <input type="number" value={student.tekanTubi} onChange={e=>updateStudent(index,'tekanTubi',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/>}</td>
+                          <td className="p-1 border border-slate-200">{student.legacyScoreOnly && student.ringkukTubiSepara === '' ? <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-center font-bold text-amber-800">SKOR {student.curlScore}</div> : <input type="number" value={student.ringkukTubiSepara} onChange={e=>updateStudent(index,'ringkukTubiSepara',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/>}</td>
+                          <td className="p-1 border border-slate-200">{student.legacyScoreOnly && student.jangkauanMelunjur === '' ? <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-center font-bold text-amber-800">SKOR {student.reachScore}</div> : <input type="number" step="0.5" value={student.jangkauanMelunjur} onChange={e=>updateStudent(index,'jangkauanMelunjur',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/>}</td>
                           <td className="p-2 border border-slate-200 text-center font-bold bg-emerald-50">{student.jumlahSkor || '-'}</td>
                           <td className="p-2 border border-slate-200 text-center font-bold bg-emerald-50">{student.gred || '-'}</td>
                           <td className="p-2 border border-slate-200 text-[10px] font-semibold bg-emerald-50">{student.statusKecergasan || '-'}</td>
@@ -544,7 +565,7 @@ export default function App() {
                 </div>
               </div>
             )}
-            <div className="p-3 border-t border-slate-200 bg-slate-50 flex justify-between text-[11px] text-slate-600"><span>Jumlah murid: <b>{students.length}</b></span><span>Skor/gred hanya dikira selepas semua 4 ujian SEGAK lengkap.</span></div>
+            <div className="p-3 border-t border-slate-200 bg-slate-50 flex justify-between text-[11px] text-slate-600"><span>Jumlah murid: <b>{students.length}</b></span><span>Rekod iDME lama yang tiada bacaan asal dipaparkan sebagai SKOR sahaja; bacaan tidak direka.</span></div>
           </section>
         )}
 

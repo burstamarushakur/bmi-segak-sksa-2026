@@ -19,6 +19,8 @@ type BmiThreshold = { underweightMax: number; normalMax: number; overweightMax: 
 // Umur 7-8 dikekalkan daripada sistem asal kerana panduan SEGAK yang dibekalkan bermula umur 9.
 const BMI_KPM: Record<'L' | 'P', Record<number, BmiThreshold>> = {
   L: {
+    5: { underweightMax: 12.9, normalMax: 16.6, overweightMax: 18.3 },
+    6: { underweightMax: 12.9, normalMax: 16.8, overweightMax: 18.5 },
     7: { underweightMax: 13.0, normalMax: 17.0, overweightMax: 19.0 },
     8: { underweightMax: 13.2, normalMax: 17.4, overweightMax: 19.7 },
     9: { underweightMax: 13.4, normalMax: 17.9, overweightMax: 20.5 },
@@ -32,6 +34,8 @@ const BMI_KPM: Record<'L' | 'P', Record<number, BmiThreshold>> = {
     17: { underweightMax: 16.8, normalMax: 24.3, overweightMax: 28.6 },
   },
   P: {
+    5: { underweightMax: 12.6, normalMax: 16.9, overweightMax: 18.9 },
+    6: { underweightMax: 12.6, normalMax: 17.0, overweightMax: 19.2 },
     7: { underweightMax: 12.6, normalMax: 17.3, overweightMax: 19.8 },
     8: { underweightMax: 12.8, normalMax: 17.7, overweightMax: 20.6 },
     9: { underweightMax: 13.0, normalMax: 18.3, overweightMax: 21.5 },
@@ -136,16 +140,25 @@ export const getRowStatus = (student: any, yearLevel: number) => {
     return 'SEPARA SIAP';
   }
 
-  const fields = [
-    hasTinggi,
-    hasBerat,
-    !isEmpty(student.naikTurunBangku),
-    !isEmpty(student.tekanTubi),
-    !isEmpty(student.ringkukTubiSepara),
-    !isEmpty(student.jangkauanMelunjur),
+  const rawSegakComplete = [
+    student.naikTurunBangku,
+    student.tekanTubi,
+    student.ringkukTubiSepara,
+    student.jangkauanMelunjur,
+  ].every(v => !isEmpty(v));
+  const scoreOnlyComplete = [
+    student.stepScore,
+    student.pushScore,
+    student.curlScore,
+    student.reachScore,
+  ].every(v => !isEmpty(v));
+  if (hasTinggi && hasBerat && (rawSegakComplete || scoreOnlyComplete)) return 'SELESAI';
+
+  const fields = [hasTinggi, hasBerat,
+    !isEmpty(student.naikTurunBangku), !isEmpty(student.tekanTubi),
+    !isEmpty(student.ringkukTubiSepara), !isEmpty(student.jangkauanMelunjur),
   ];
   const filledCount = fields.filter(Boolean).length;
-  if (filledCount === 0) return 'BELUM ISI';
-  if (filledCount === fields.length) return 'SELESAI';
+  if (filledCount === 0 && !scoreOnlyComplete) return 'BELUM ISI';
   return 'SEPARA SIAP';
 };
