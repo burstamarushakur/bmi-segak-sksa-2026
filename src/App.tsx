@@ -1,4 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Download,
+  FileDown,
+  Loader2,
+  LogOut,
+  RefreshCw,
+  Save,
+  ShieldCheck,
+  XCircle,
+} from 'lucide-react';
 import {
   calculateBmi,
   getAgeFromClassName,
@@ -6,861 +18,486 @@ import {
   getOverallSegakResult,
   getRowStatus,
   getSegakScore,
-  getYearFromClassName
+  getYearFromClassName,
 } from './lib/calculations';
-import { Loader2, Save, CheckCircle2, AlertCircle, RefreshCw, XCircle } from 'lucide-react';
-
-const API_URL = "https://script.google.com/macros/s/AKfycbziQkmvtOm-dcKRDFPffpC6hAnrzmb117CBBqtw8p47KtnE6HX5O5VcjM2EIHTIBg8/exec";
-const DEFAULT_PASSWORD = "pjkjba5095";
+import { apiCall, hasApiUrl } from './lib/api';
+import { BssrHistory, downloadClassBssrPdf, downloadStudentBssrPdf } from './lib/bssrPdf';
 
 interface Student {
   rowNumber: number;
-  bil?: number;
+  bil: number;
+  studentKey: string;
+  studentId: string;
   namaMurid: string;
-  mykid?: string;
+  className?: string;
+  classFullName?: string;
+  yearLevel?: number;
+  classTeacherName?: string;
   jantina: string;
-  umur: number;
-  tinggi: string | number;
-  berat: string | number;
-  bmi: string | number;
+  mykid: string;
+  noTelPenjaga: string;
+  umur: number | string;
+  tinggi: number | string;
+  berat: number | string;
+  bmi: number | string;
   statusBmi: string;
-  naikTurunBangku: string | number;
-  tekanTubi: string | number;
-  ringkukTubiSepara: string | number;
-  jangkauanMelunjur: string | number;
-  jumlahSkor: string | number;
+  naikTurunBangku: number | string;
+  tekanTubi: number | string;
+  ringkukTubiSepara: number | string;
+  jangkauanMelunjur: number | string;
+  jumlahSkor: number | string;
   gred: string;
   statusKecergasan: string;
-  [key: string]: any;
+  tarikhUjian?: string;
+  jantinaPerluSemak?: boolean;
 }
 
+type Message = { type: 'success' | 'error' | 'info'; text: string };
+
+type ClassStatus = {
+  className: string;
+  yearLevel: number;
+  totalStudents: number;
+  bmiComplete: boolean;
+  segakComplete: boolean;
+};
+
+const emptyToNumber = (value: unknown) => {
+  if (value === '' || value === null || value === undefined) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const normalizedGender = (value: string) => {
+  const v = String(value || '').toUpperCase();
+  if (v.startsWith('L')) return 'LELAKI';
+  if (v.startsWith('P')) return 'PEREMPUAN';
+  return '';
+};
+
+const sortClasses = (list: string[]) => {
+  const order = ['S', 'K', 'B'];
+  return [...list].sort((a, b) => {
+    const ya = parseInt(a, 10);
+    const yb = parseInt(b, 10);
+    if (ya !== yb) return ya - yb;
+    const sa = a.replace(String(ya), '');
+    const sb = b.replace(String(yb), '');
+    return order.indexOf(sa) - order.indexOf(sb);
+  });
+};
+
+const recomputeStudent = (student: Student, className: string): Student => {
+  const yearLevel = getYearFromClassName(className);
+  const age = emptyToNumber(student.umur) ?? getAgeFromClassName(className);
+  const height = emptyToNumber(student.tinggi);
+  const weight = emptyToNumber(student.berat);
+  const gender = normalizedGender(student.jantina);
+  const bmi = height && weight ? calculateBmi(height, weight) : 0;
+  const statusBmi = bmi && gender ? getBmiStatusByAgeGender(age, gender, bmi) : '';
+
+  let jumlahSkor: number | string = '';
+  let gred = '';
+  let statusKecergasan = '';
+
+  if (yearLevel >= 4) {
+    const raw = {
+      naikTurunBangku: emptyToNumber(student.naikTurunBangku),
+      tekanTubi: emptyToNumber(student.tekanTubi),
+      ringkukTubiSepara: emptyToNumber(student.ringkukTubiSepara),
+      jangkauanMelunjur: emptyToNumber(student.jangkauanMelunjur),
+    };
+    const complete = Object.values(raw).every(v => v !== null);
+    if (complete && gender) {
+      const scores = [
+        getSegakScore(age, gender, 'naikTurunBangku', raw.naikTurunBangku as number),
+        getSegakScore(age, gender, 'tekanTubi', raw.tekanTubi as number),
+        getSegakScore(age, gender, 'ringkukTubiSepara', raw.ringkukTubiSepara as number),
+        getSegakScore(age, gender, 'jangkauanMelunjur', raw.jangkauanMelunjur as number),
+      ];
+      if (scores.every(score => score > 0)) {
+        jumlahSkor = scores.reduce((a, b) => a + b, 0);
+        const result = getOverallSegakResult(Number(jumlahSkor));
+        gred = result.gred;
+        statusKecergasan = result.status;
+      }
+    }
+  }
+
+  return {
+    ...student,
+    jantina: gender,
+    umur: age,
+    bmi: bmi || '',
+    statusBmi: statusBmi === 'Tiada Data' ? '' : statusBmi,
+    jumlahSkor,
+    gred,
+    statusKecergasan,
+  };
+};
+
 export default function App() {
+  const [password, setPassword] = useState(() => sessionStorage.getItem('segak_app_password') || '');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [authReady, setAuthReady] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
+
+  const [sessions, setSessions] = useState<number[]>([]);
+  const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
   const [classes, setClasses] = useState<string[]>([]);
-  const [selectedClass, setSelectedClass] = useState<string>('');
-  
+  const [selectedClass, setSelectedClass] = useState('');
+  const [selectedPengisian, setSelectedPengisian] = useState<'1' | '2'>('1');
+  const [schoolName, setSchoolName] = useState('SEKOLAH KEBANGSAAN SUNGAI ABONG');
+
   const [students, setStudents] = useState<Student[]>([]);
   const [originalStudents, setOriginalStudents] = useState<Student[]>([]);
-  
-  const [selectedPengisian, setSelectedPengisian] = useState<string>('1');
+  const [classInfo, setClassInfo] = useState<any>(null);
+  const [classStatuses, setClassStatuses] = useState<ClassStatus[]>([]);
 
-  const [loadingClasses, setLoadingClasses] = useState(true);
+  const [loadingClasses, setLoadingClasses] = useState(false);
   const [loadingStudents, setLoadingStudents] = useState(false);
+  const [loadingStatuses, setLoadingStatuses] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [downloadingClass, setDownloadingClass] = useState(false);
+  const [downloadingStudent, setDownloadingStudent] = useState<string | null>(null);
+  const [message, setMessage] = useState<Message | null>(null);
 
-  const [isAuthorizedToFill, setIsAuthorizedToFill] = useState(false);
-  const [editableRows, setEditableRows] = useState<number[]>([]);
+  const yearLevel = selectedClass ? getYearFromClassName(selectedClass) : 0;
+  const changedStudents = useMemo(
+    () => students.filter((student, index) => JSON.stringify(student) !== JSON.stringify(originalStudents[index])),
+    [students, originalStudents],
+  );
 
-  const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [passwordInput, setPasswordInput] = useState('');
-  const [passwordError, setPasswordError] = useState<string | null>(null);
-  const [passwordAction, setPasswordAction] = useState<'fill' | 'edit' | null>(null);
-  const [targetRowNumber, setTargetRowNumber] = useState<number | null>(null);
-
-  const [classStatusList, setClassStatusList] = useState<any[]>([]);
-  const [loadingStatusSection, setLoadingStatusSection] = useState(false);
-
-  const sortClassesSKB = (classList: string[]) => {
-      const order = ['S', 'K', 'B'];
-      return [...classList].sort((a, b) => {
-          const yearA = parseInt(a);
-          const yearB = parseInt(b);
-          if (yearA !== yearB) return yearA - yearB;
-          const suffixA = a.replace(yearA.toString(), '');
-          const suffixB = b.replace(yearB.toString(), '');
-          return order.indexOf(suffixA) - order.indexOf(suffixB);
-      });
-  };
-
-  const getClassCompletionStatus = (students: any[], yearLevel: number) => {
-      if (students.length === 0) return { bmiComplete: false, segakComplete: false };
-      const bmiComplete = students.every(s => s.tinggi && s.berat);
-      let segakComplete = false;
-      if (yearLevel >= 4) {
-          segakComplete = students.every(s => s.naikTurunBangku && s.tekanTubi && s.ringkukTubiSepara && s.jangkauanMelunjur);
-      }
-      return { bmiComplete, segakComplete };
-  };
-
-  const fetchAllClassStatuses = async () => {
-    setLoadingStatusSection(true);
-    let classList = classes;
-    if (classList.length === 0) {
-        const res = await fetch(`${API_URL}?action=getClasses`);
-        const data = await res.json();
-        classList = (Array.isArray(data) ? data : (data.classes || data.data || []));
+  const authenticate = async (candidate: string) => {
+    if (!candidate.trim()) return;
+    setAuthLoading(true);
+    setAuthError('');
+    try {
+      await apiCall('auth', {}, candidate);
+      sessionStorage.setItem('segak_app_password', candidate);
+      setPassword(candidate);
+      setAuthReady(true);
+      setPasswordInput('');
+    } catch {
+      sessionStorage.removeItem('segak_app_password');
+      setPassword('');
+      setAuthReady(false);
+      setAuthError('Password tidak sah.');
+    } finally {
+      setAuthLoading(false);
     }
-    
-    const sorted = sortClassesSKB(classList);
-    const statuses = await Promise.all(
-        sorted.map(async (className) => {
-            const res = await fetch(`${API_URL}?action=getStudentsByClass&className=${encodeURIComponent(className)}&pengisian=${selectedPengisian}`);
-            const data = await res.json();
-            const studentsData = Array.isArray(data) ? data : (data.students || data.data || []);
-            const year = parseInt(className);
-            return {
-                className,
-                yearLevel: year,
-                ...getClassCompletionStatus(studentsData, year)
-            };
-        })
-    );
-    setClassStatusList(statuses);
-    setLoadingStatusSection(false);
   };
-
-  const topScrollRef = React.useRef<HTMLDivElement>(null);
-  const bottomScrollRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetchClasses();
+    if (!hasApiUrl()) {
+      setAuthError('Webapp belum disambungkan kepada Supabase SEGAK. Tetapkan VITE_SEGAK_API_URL dahulu.');
+      return;
+    }
+    if (password) authenticate(password);
   }, []);
 
   useEffect(() => {
-    fetchAllClassStatuses();
-  }, [selectedPengisian]);
+    if (!authReady) return;
+    (async () => {
+      try {
+        const config: any = await apiCall('getConfig');
+        const years = (config.sessions || []).map(Number).filter(Number.isFinite).sort((a: number, b: number) => a - b);
+        setSessions(years);
+        if (config.schoolName) setSchoolName(config.schoolName);
+        if (years.length) {
+          const current = new Date().getFullYear();
+          setSelectedYear(years.includes(current) ? current : years[years.length - 1]);
+        }
+      } catch (error: any) {
+        setMessage({ type: 'error', text: error.message || 'Gagal mendapatkan konfigurasi.' });
+      }
+    })();
+  }, [authReady]);
+
+  const fetchClasses = async () => {
+    if (!authReady) return;
+    setLoadingClasses(true);
+    setSelectedClass('');
+    setStudents([]);
+    setOriginalStudents([]);
+    try {
+      const data: any = await apiCall('getClasses', { year: selectedYear });
+      setClasses(sortClasses(Array.isArray(data.classes) ? data.classes : []));
+    } catch (error: any) {
+      setClasses([]);
+      setMessage({ type: 'error', text: error.message || 'Gagal mendapatkan senarai kelas.' });
+    } finally {
+      setLoadingClasses(false);
+    }
+  };
+
+  const fetchStatuses = async () => {
+    if (!authReady) return;
+    setLoadingStatuses(true);
+    try {
+      const data: any = await apiCall('getClassStatuses', { year: selectedYear, pengisian: Number(selectedPengisian) });
+      setClassStatuses(sortClasses((data.statuses || []).map((s: any) => s.className)).map(name => (data.statuses || []).find((s: any) => s.className === name)));
+    } catch {
+      setClassStatuses([]);
+    } finally {
+      setLoadingStatuses(false);
+    }
+  };
 
   useEffect(() => {
-    const bottomDiv = bottomScrollRef.current;
-    const topDiv = topScrollRef.current;
-    if (!bottomDiv || !topDiv) return;
-    const topHelper = topDiv.firstElementChild as HTMLDivElement;
-    if (!topHelper) return;
+    if (!authReady) return;
+    fetchClasses();
+  }, [selectedYear, authReady]);
 
-    let isSyncingTop = false;
-    let isSyncingBottom = false;
+  useEffect(() => {
+    if (!authReady) return;
+    fetchStatuses();
+  }, [selectedYear, selectedPengisian, authReady]);
 
-    const onTopScroll = () => {
-        if (!isSyncingTop) {
-            isSyncingBottom = true;
-            bottomDiv.scrollLeft = topDiv.scrollLeft;
-        }
-        isSyncingTop = false;
-    };
-
-    const onBottomScroll = () => {
-        if (!isSyncingBottom) {
-            isSyncingTop = true;
-            topDiv.scrollLeft = bottomDiv.scrollLeft;
-        }
-        isSyncingBottom = false;
-    };
-
-    topDiv.addEventListener('scroll', onTopScroll, { passive: true });
-    bottomDiv.addEventListener('scroll', onBottomScroll, { passive: true });
-
-    let resizeObserver: ResizeObserver | null = null;
-    if (window.ResizeObserver) {
-        resizeObserver = new ResizeObserver(() => {
-            topHelper.style.width = `${bottomDiv.scrollWidth}px`;
-        });
-        resizeObserver.observe(bottomDiv);
-        const table = bottomDiv.querySelector('table');
-        if (table) {
-            resizeObserver.observe(table);
-        }
-    } else {
-        topHelper.style.width = `${bottomDiv.scrollWidth}px`;
-    }
-
-    return () => {
-        topDiv.removeEventListener('scroll', onTopScroll);
-        bottomDiv.removeEventListener('scroll', onBottomScroll);
-        if (resizeObserver) resizeObserver.disconnect();
-    };
-  }, [selectedClass, students.length]);
-
- const fetchClasses = async () => {
-  try {
-    setLoadingClasses(true);
-    setMessage(null);
-
-    const res = await fetch(`${API_URL}?action=getClasses`);
-    const data = await res.json();
-
-    // Format sebenar dari GAS:
-    // { success: true, classes: ["1B","1K","1S", ...] }
-    let classList: string[] = [];
-
-    if (Array.isArray(data)) {
-      classList = data;
-    } else if (data && Array.isArray(data.classes)) {
-      classList = data.classes;
-    } else if (data && Array.isArray(data.data)) {
-      classList = data.data;
-    }
-
-    if (!classList.length) {
-      throw new Error("Senarai kelas tidak diterima dalam format yang betul.");
-    }
-
-    setClasses(classList);
-  } catch (err) {
-    console.error("Failed to fetch classes", err);
-    setClasses([]);
-    setMessage({
-      type: 'error',
-      text: 'Gagal mendapatkan senarai kelas dari pelayan.'
-    });
-  } finally {
-    setLoadingClasses(false);
-  }
-};
-
-const fetchStudents = async (className: string, pengisian: string) => {
-  if (!className) return;
-
-  try {
+  const fetchStudents = async (className = selectedClass, pengisian = selectedPengisian) => {
+    if (!className) return;
     setLoadingStudents(true);
     setMessage(null);
-
-    const res = await fetch(`${API_URL}?action=getStudentsByClass&className=${encodeURIComponent(className)}&pengisian=${pengisian}`);
-    const data = await res.json();
-
-    const computedAge = getAgeFromClassName(className);
-
-    // Format sebenar dari GAS:
-    // { success: true, className: "1S", students: [...] }
-    let rawStudents: any[] = [];
-
-    if (Array.isArray(data)) {
-      rawStudents = data;
-    } else if (data && Array.isArray(data.students)) {
-      rawStudents = data.students;
-    } else if (data && Array.isArray(data.data)) {
-      rawStudents = data.data;
-    }
-
-    if (!rawStudents.length) {
+    try {
+      const data: any = await apiCall('getStudentsByClass', {
+        year: selectedYear,
+        className,
+        pengisian: Number(pengisian),
+      });
+      const normalized: Student[] = (data.students || []).map((item: any, index: number) => recomputeStudent({
+        rowNumber: item.rowNumber || index + 1,
+        bil: item.bil || index + 1,
+        studentKey: item.studentKey || item.studentId,
+        studentId: item.studentId || item.studentKey,
+        namaMurid: item.namaMurid || '',
+        className: item.className || className,
+        classFullName: item.classFullName || '',
+        yearLevel: item.yearLevel || getYearFromClassName(className),
+        classTeacherName: item.classTeacherName || '',
+        jantina: item.jantina || '',
+        mykid: item.mykid || '',
+        noTelPenjaga: item.noTelPenjaga || '',
+        umur: item.umur || getAgeFromClassName(className),
+        tinggi: item.tinggi ?? '',
+        berat: item.berat ?? '',
+        bmi: item.bmi ?? '',
+        statusBmi: item.statusBmi || '',
+        naikTurunBangku: item.naikTurunBangku ?? '',
+        tekanTubi: item.tekanTubi ?? '',
+        ringkukTubiSepara: item.ringkukTubiSepara ?? '',
+        jangkauanMelunjur: item.jangkauanMelunjur ?? '',
+        jumlahSkor: item.jumlahSkor ?? '',
+        gred: item.gred || '',
+        statusKecergasan: item.statusKecergasan || '',
+        tarikhUjian: item.tarikhUjian || '',
+        jantinaPerluSemak: item.jantinaPerluSemak,
+      }, className));
+      setStudents(normalized);
+      setOriginalStudents(JSON.parse(JSON.stringify(normalized)));
+      setClassInfo(data.classInfo || null);
+    } catch (error: any) {
       setStudents([]);
       setOriginalStudents([]);
-      return;
-    }
-
-    const normalizedData: Student[] = rawStudents.map((item: any, index: number) => {
-      const nama = item.namaMurid || item["NAMA MURID"] || item.nama || item.name || '';
-      const jantina = item.jantina || item["JANTINA"] || item.gender || '';
-
-      return {
-        ...item,
-        rowNumber: item.rowNumber || item.ROW_NUMBER || item.Row || (index + 10),
-        bil: item.bil || item["BIL"] || (index + 1),
-        namaMurid: nama,
-        mykid: String(item.mykid || item.MYKID || item["MY KID"] || item.Mykid || ''),
-        jantina: String(jantina || ''),
-        umur: computedAge,
-        tinggi: String(item.tinggi ?? item["TINGGI"] ?? ''),
-        berat: String(item.berat ?? item["BERAT"] ?? ''),
-        bmi: String(item.bmi ?? item["BMI"] ?? ''),
-        statusBmi: String(item.statusBmi ?? item["STATUS BMI"] ?? ''),
-        naikTurunBangku: String(item.naikTurunBangku ?? item["NAIK TURUN BANGKU"] ?? ''),
-        tekanTubi: String(item.tekanTubi ?? item["TEKAN TUBI"] ?? ''),
-        ringkukTubiSepara: String(item.ringkukTubiSepara ?? item["RINGKUK TUBI SEPARA"] ?? ''),
-        jangkauanMelunjur: String(item.jangkauanMelunjur ?? item["JANGKAUAN MELUNJUR"] ?? ''),
-        jumlahSkor: String(item.jumlahSkor ?? item["JUMLAH SKOR"] ?? ''),
-        gred: String(item.gred ?? item["GRED"] ?? ''),
-        statusKecergasan: String(item.statusKecergasan ?? item["STATUS KECERGASAN"] ?? '')
-      };
-    });
-
-    setStudents(JSON.parse(JSON.stringify(normalizedData)));
-    setOriginalStudents(JSON.parse(JSON.stringify(normalizedData)));
-  } catch (err) {
-    console.error("Failed to fetch students", err);
-    setStudents([]);
-    setOriginalStudents([]);
-    setMessage({
-      type: 'error',
-      text: 'Gagal memuat turun data murid. Sila cuba sebentar lagi.'
-    });
-  } finally {
-    setLoadingStudents(false);
-  }
-};
-
-  const handleClassChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value;
-    setSelectedClass(val);
-    setStudents([]);
-    setOriginalStudents([]);
-    setIsAuthorizedToFill(false);
-    setEditableRows([]);
-    if (val) {
-      fetchStudents(val, selectedPengisian);
+      setMessage({ type: 'error', text: error.message || 'Gagal mendapatkan data murid.' });
+    } finally {
+      setLoadingStudents(false);
     }
   };
 
-  const handlePengisianChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value;
-    setSelectedPengisian(val);
-    setStudents([]);
-    setOriginalStudents([]);
-    setIsAuthorizedToFill(false);
-    setEditableRows([]);
-    if (selectedClass) {
-      fetchStudents(selectedClass, val);
-    }
-  };
+  useEffect(() => {
+    if (selectedClass) fetchStudents(selectedClass, selectedPengisian);
+  }, [selectedClass, selectedPengisian]);
 
-  const handleInputChange = (index: number, field: keyof Student, value: string) => {
-    setStudents(prev => {
-      const newData = [...prev];
-      const student = { ...newData[index], [field]: value };
-      
-      const yearLevel = getYearFromClassName(selectedClass);
-
-      if (field === 'tinggi' || field === 'berat') {
-        const t = parseFloat(student.tinggi as string);
-        const b = parseFloat(student.berat as string);
-        if (!isNaN(t) && !isNaN(b)) {
-           const bmiVal = calculateBmi(t, b);
-           student.bmi = String(bmiVal);
-           student.statusBmi = String(getBmiStatusByAgeGender(student.umur, student.jantina, bmiVal));
-        } else {
-           student.bmi = '';
-           student.statusBmi = '';
-        }
-      }
-
-      if (yearLevel >= 4 && ['naikTurunBangku', 'tekanTubi', 'ringkukTubiSepara', 'jangkauanMelunjur'].includes(field as string)) {
-          const s1 = getSegakScore(student.umur, student.jantina, 'naikTurunBangku', parseFloat(student.naikTurunBangku as string));
-          const s2 = getSegakScore(student.umur, student.jantina, 'tekanTubi', parseFloat(student.tekanTubi as string));
-          const s3 = getSegakScore(student.umur, student.jantina, 'ringkukTubiSepara', parseFloat(student.ringkukTubiSepara as string));
-          const s4 = getSegakScore(student.umur, student.jantina, 'jangkauanMelunjur', parseFloat(student.jangkauanMelunjur as string));
-          
-          const isEmpty = (v: any) => v === "" || v === undefined || v === null;
-          
-          const hasAnySegak = !isEmpty(student.naikTurunBangku) || !isEmpty(student.tekanTubi) || !isEmpty(student.ringkukTubiSepara) || !isEmpty(student.jangkauanMelunjur);
-
-          if (hasAnySegak) {
-              const total = s1 + s2 + s3 + s4;
-              student.jumlahSkor = String(total);
-              const { gred, status } = getOverallSegakResult(total);
-              student.gred = String(gred);
-              student.statusKecergasan = String(status);
-          } else {
-              student.jumlahSkor = '';
-              student.gred = '';
-              student.statusKecergasan = '';
-          }
-      }
-
-      newData[index] = student;
-      return newData;
-    });
+  const updateStudent = (index: number, field: keyof Student, value: any) => {
+    setStudents(prev => prev.map((student, i) => i === index ? recomputeStudent({ ...student, [field]: value }, selectedClass) : student));
   };
 
   const handleSave = async () => {
-    if (!selectedClass) return;
-
-    const changedStudents = students.filter((student, index) => {
-        const original = originalStudents[index];
-        return JSON.stringify(student) !== JSON.stringify(original);
-    });
-
-    if (changedStudents.length === 0) {
-       setMessage({ type: 'success', text: 'Tiada perubahan rekod untuk disimpan.' });
-       return;
-    }
-
+    if (!selectedClass || !changedStudents.length) return;
+    setSaving(true);
+    setMessage(null);
     try {
-        setSaving(true);
-        setMessage(null);
-        
-        const payload = {
-            action: "saveClassRecords",
-            className: selectedClass,
-            pengisian: Number(selectedPengisian),
-            students: changedStudents.map(s => ({
-                rowNumber: s.rowNumber,
-                umur: s.umur,
-                tinggi: s.tinggi,
-                berat: s.berat,
-                bmi: s.bmi,
-                statusBmi: s.statusBmi,
-                naikTurunBangku: s.naikTurunBangku,
-                tekanTubi: s.tekanTubi,
-                ringkukTubiSepara: s.ringkukTubiSepara,
-                jangkauanMelunjur: s.jangkauanMelunjur,
-                jumlahSkor: s.jumlahSkor,
-                gred: s.gred,
-                statusKecergasan: s.statusKecergasan
-            }))
-        };
-
-        const res = await fetch(API_URL, {
-            method: 'POST',
-            body: JSON.stringify(payload),
-            headers: {
-                'Content-Type': 'text/plain;charset=utf-8', 
-            }
-        });
-        
-        const result = await res.json();
-        // Allow fallback to success checking, GAS may return varied cases
-        if (result.status === 'success' || result.success || result.result === 'success') {
-            setMessage({ type: 'success', text: 'Data kelas berjaya disimpan!' });
-            setOriginalStudents(JSON.parse(JSON.stringify(students)));
-            setIsAuthorizedToFill(false);
-            setEditableRows([]);
-        } else {
-            throw new Error(result.message || 'Ralat semasa menyimpan data');
-        }
-        
-    } catch (err: any) {
-        console.error("Save error", err);
-        setMessage({ type: 'error', text: err.message || 'Gagal menyimpan rekod. Sila semak sambungan internet dan cuba lagi.' });
+      const data: any = await apiCall('saveClassRecords', {
+        year: selectedYear,
+        className: selectedClass,
+        pengisian: Number(selectedPengisian),
+        students: changedStudents,
+      });
+      setMessage({ type: 'success', text: `${data.saved || changedStudents.length} rekod berjaya disimpan ke Supabase SEGAK.` });
+      await fetchStudents();
+      await fetchStatuses();
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.message || 'Gagal menyimpan data.' });
     } finally {
-        setSaving(false);
+      setSaving(false);
     }
   };
 
-  const requestFillAccess = () => {
-      setPasswordAction('fill');
-      setPasswordInput('');
-      setPasswordError(null);
-      setShowPasswordModal(true);
+  const downloadStudent = async (student: Student) => {
+    setDownloadingStudent(student.studentId);
+    try {
+      const data: any = await apiCall('getStudentBssr', {
+        studentId: student.studentId,
+        namaMurid: student.namaMurid,
+      });
+      await downloadStudentBssrPdf(data.history as BssrHistory, selectedYear);
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.message || 'PDF murid gagal dijana.' });
+    } finally {
+      setDownloadingStudent(null);
+    }
   };
 
-  const lockFillAccess = () => {
-      setIsAuthorizedToFill(false);
-      setEditableRows([]);
+  const downloadClass = async () => {
+    if (!selectedClass || yearLevel < 4) return;
+    setDownloadingClass(true);
+    try {
+      const data: any = await apiCall('getClassBssr', { year: selectedYear, className: selectedClass });
+      await downloadClassBssrPdf((data.histories || []) as BssrHistory[], selectedYear, selectedClass);
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.message || 'PDF kelas gagal dijana.' });
+    } finally {
+      setDownloadingClass(false);
+    }
   };
 
-  const requestEditRow = (rowNumber: number) => {
-      setPasswordAction('edit');
-      setTargetRowNumber(rowNumber);
-      setPasswordInput('');
-      setPasswordError(null);
-      setShowPasswordModal(true);
+  const logout = () => {
+    sessionStorage.removeItem('segak_app_password');
+    setPassword('');
+    setAuthReady(false);
+    setStudents([]);
+    setOriginalStudents([]);
+    setPasswordInput('');
   };
 
-  const handlePasswordSubmit = (e?: React.FormEvent) => {
-      if (e) e.preventDefault();
-      if (passwordInput === DEFAULT_PASSWORD) {
-          if (passwordAction === 'fill') {
-              setIsAuthorizedToFill(true);
-              setMessage(null);
-          } else if (passwordAction === 'edit' && targetRowNumber !== null) {
-              setEditableRows(prev => [...prev, targetRowNumber]);
-          }
-          closePasswordModal();
-      } else {
-          setPasswordError('Password salah');
-      }
-  };
-
-  const closePasswordModal = () => {
-      setShowPasswordModal(false);
-      setPasswordAction(null);
-      setTargetRowNumber(null);
-      setPasswordInput('');
-      setPasswordError(null);
-  };
-
-  const yearLevel = getYearFromClassName(selectedClass);
-  const showSegak = yearLevel >= 4;
-
-  const totalStudents = students.length;
-  const completedStudents = students.filter(s => getRowStatus(s, yearLevel) === 'SELESAI').length;
-  const incompleteStudents = totalStudents - completedStudents;
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden">
+          <div className="bg-blue-900 text-white p-6">
+            <div className="flex items-center gap-3"><ShieldCheck className="w-8 h-8"/><div><h1 className="font-bold text-lg">BMI & SEGAK SKSA</h1><p className="text-blue-100 text-xs">Supabase Edition · Data kelas daripada Portal Koku</p></div></div>
+          </div>
+          <form onSubmit={e => { e.preventDefault(); authenticate(passwordInput); }} className="p-6 space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-slate-600 uppercase">Password Sistem</label>
+              <input type="password" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} autoFocus className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Masukkan password"/>
+              {authError && <p className="mt-2 text-xs text-red-600 flex items-start gap-1"><AlertCircle className="w-4 h-4 shrink-0"/>{authError}</p>}
+            </div>
+            <button disabled={authLoading || !passwordInput.trim()} className="w-full bg-blue-700 hover:bg-blue-800 text-white rounded-lg py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
+              {authLoading ? <Loader2 className="w-4 h-4 animate-spin"/> : <ShieldCheck className="w-4 h-4"/>} MASUK SISTEM
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-800 font-sans pb-20">
-      <header className="bg-blue-800 text-white shadow-md sticky top-0 z-50">
-        <div className="w-full px-4 sm:px-6 lg:px-8 py-4 flex flex-col items-center justify-center text-center gap-3">
-          <img 
-            src="https://i.postimg.cc/3RF9M05N/Logo-SKSA.png" 
-            alt="Logo SKSA" 
-            className="h-16 sm:h-20 w-auto object-contain drop-shadow-md" 
-            referrerPolicy="no-referrer" 
-          />
-          <div className="flex flex-col items-center gap-0.5">
-            <h1 className="text-base sm:text-lg font-bold tracking-tight uppercase">SISTEM BMI 5-9T DAN SEGAK</h1>
-            <h2 className="text-sm sm:text-base font-semibold text-blue-100 tracking-wide uppercase">SEKOLAH KEBANGSAAN SUNGAI ABONG</h2>
-            <p className="text-xs sm:text-sm font-medium text-blue-200">2026</p>
+    <div className="min-h-screen bg-slate-100 text-slate-800">
+      <header className="bg-blue-950 text-white shadow-md sticky top-0 z-50">
+        <div className="max-w-[1800px] mx-auto px-4 py-3 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div>
+            <h1 className="font-bold tracking-wide">SISTEM BMI & SEGAK SKSA</h1>
+            <p className="text-[11px] text-blue-200">{schoolName} · Master murid/kelas: Supabase Portal Koku</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))} className="bg-white text-slate-800 text-sm rounded px-3 py-2 font-semibold">
+              {sessions.map(year => <option key={year} value={year}>SESI {year}</option>)}
+            </select>
+            <div className="flex rounded overflow-hidden border border-blue-400/40">
+              {(['1','2'] as const).map(p => <button key={p} onClick={() => setSelectedPengisian(p)} className={`px-3 py-2 text-xs font-bold ${selectedPengisian===p?'bg-white text-blue-900':'bg-blue-800 text-white hover:bg-blue-700'}`}>PENGISIAN {p}</button>)}
+            </div>
+            <button onClick={logout} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-xs font-semibold flex items-center gap-1.5"><LogOut className="w-4 h-4"/> Keluar</button>
           </div>
         </div>
       </header>
 
-      <main className="w-full px-4 sm:px-6 lg:px-8 py-4 space-y-4">
-        
-        <div className="bg-white p-5 sm:p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col xl:flex-row items-start xl:items-center justify-between gap-5">
-            <div className="flex flex-col sm:flex-row w-full sm:w-auto items-start sm:items-center gap-4">
-                <div className="w-full sm:w-64">
-                    <label htmlFor="classSelect" className="block text-sm text-slate-600 font-medium mb-1.5 uppercase tracking-wide">
-                        PILIH KELAS
-                    </label>
-                    <div className="relative">
-                      <select 
-                          id="classSelect"
-                          className="w-full pl-3 pr-10 py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg text-base font-medium text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 appearance-none disabled:opacity-50 transition-colors"
-                          value={selectedClass}
-                          onChange={handleClassChange}
-                          disabled={loadingClasses || saving}
-                      >
-                          <option value="">-- Sila Pilih Kelas --</option>
-                          {classes.map((cls, idx) => (
-                              <option key={idx} value={cls}>{cls}</option>
-                          ))}
-                      </select>
-                      <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                          {loadingClasses ? (
-                               <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
-                          ) : (
-                               <svg className="w-5 h-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
-                               </svg>
-                          )}
-                      </div>
-                    </div>
-                </div>
+      <main className="max-w-[1800px] mx-auto p-4 space-y-4">
+        {message && <div className={`rounded-lg border px-4 py-3 text-sm flex items-center gap-2 ${message.type==='error'?'bg-red-50 border-red-200 text-red-700':message.type==='success'?'bg-emerald-50 border-emerald-200 text-emerald-700':'bg-blue-50 border-blue-200 text-blue-700'}`}>{message.type==='success'?<CheckCircle2 className="w-4 h-4"/>:<AlertCircle className="w-4 h-4"/>}{message.text}</div>}
 
-                <div className="w-full sm:w-48">
-                    <label htmlFor="pengisianSelect" className="block text-sm text-slate-600 font-medium mb-1.5 uppercase tracking-wide">
-                        PILIH PENGISIAN
-                    </label>
-                    <div className="relative">
-                      <select 
-                          id="pengisianSelect"
-                          className="w-full pl-3 pr-10 py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg text-base font-medium text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 appearance-none disabled:opacity-50 transition-colors"
-                          value={selectedPengisian}
-                          onChange={handlePengisianChange}
-                          disabled={saving}
-                      >
-                          <option value="1">PENGISIAN 1</option>
-                          <option value="2">PENGISIAN 2</option>
-                      </select>
-                      <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                          <svg className="w-5 h-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                              <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
-                          </svg>
-                      </div>
-                    </div>
-                </div>
-            </div>
-
-            {selectedClass && !loadingStudents && totalStudents > 0 && (
-                 <div className="flex flex-col sm:flex-row items-center gap-4 w-full xl:w-auto mt-4 xl:mt-0">
-                     <span className="hidden sm:inline-flex items-center text-xs font-semibold text-blue-700 bg-blue-50 px-3 py-1.5 rounded-md border border-blue-200">
-                         Paparan semasa: Pengisian {selectedPengisian}
-                     </span>
-                     <div className="flex bg-slate-50 border border-slate-100 rounded-lg p-3 sm:px-6 gap-6 sm:gap-8 w-full sm:w-auto shadow-sm">
-                        <div className="text-center flex-1 sm:flex-initial">
-                            <div className="text-2xl font-bold text-slate-800">{totalStudents}</div>
-                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Jumlah Murid</div>
-                        </div>
-                        <div className="w-px bg-slate-200"></div>
-                        <div className="text-center flex-1 sm:flex-initial">
-                            <div className="text-2xl font-bold text-emerald-600">{completedStudents}</div>
-                            <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Selesai</div>
-                        </div>
-                        <div className="w-px bg-slate-200"></div>
-                        <div className="text-center flex-1 sm:flex-initial">
-                            <div className="text-2xl font-bold text-amber-600">{incompleteStudents}</div>
-                            <div className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Belum Isi</div>
-                        </div>
-                    </div>
-                    <button
-                        onClick={isAuthorizedToFill ? lockFillAccess : requestFillAccess}
-                        className={`w-full sm:w-auto px-5 py-3 text-sm font-bold rounded-lg shadow-sm transition-colors border outline-none focus:ring-2 ${
-                            isAuthorizedToFill 
-                            ? 'bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200 focus:ring-amber-500' 
-                            : 'bg-slate-800 text-white border-slate-800 hover:bg-slate-700 focus:ring-slate-500'
-                        }`}
-                    >
-                        {isAuthorizedToFill ? 'KUNCI SEMULA' : 'BUKA ISI'}
-                    </button>
-                </div>
-            )}
-        </div>
-
-        {message && (
-             <div className={`p-4 rounded-xl flex items-center gap-3 shadow-sm ${message.type === 'success' ? 'bg-emerald-50 text-emerald-800 border-l-4 border-emerald-500' : 'bg-red-50 text-red-800 border-l-4 border-red-500'}`}>
-                {message.type === 'success' ? <CheckCircle2 className="w-6 h-6 flex-shrink-0" /> : <AlertCircle className="w-6 h-6 flex-shrink-0" />}
-                <p className="font-semibold text-sm sm:text-base">{message.text}</p>
-            </div>
-        )}
-
-        {loadingStudents ? (
-            <div className="bg-white border flex flex-col border-slate-200 rounded-xl overflow-hidden shadow-sm p-24 items-center justify-center text-slate-500">
-                <Loader2 className="w-10 h-10 animate-spin mb-4 text-blue-500" />
-                <p className="font-medium">Memuatkan baris data murid...</p>
-            </div>
-        ) : (
-            selectedClass && students.length > 0 && (
-                <div className="bg-white border flex flex-col border-slate-300 rounded-md shadow-sm text-sm relative">
-                    <div ref={bottomScrollRef} className="overflow-x-auto w-full pb-1">
-                        <table className="w-full text-left whitespace-nowrap min-w-max border-collapse">
-                            <thead className="text-[11px] text-slate-700 bg-slate-200 uppercase sticky top-0 z-20 border-b border-slate-300 shadow-sm font-semibold tracking-wider">
-                                <tr>
-                                    <th className="px-2 py-2 text-center align-middle w-10 border-r border-slate-300">Bil</th>
-                                    <th className="px-3 py-2 text-center align-middle sticky left-0 bg-slate-200 z-30 drop-shadow-[2px_0_2px_rgba(0,0,0,0.05)] border-r border-slate-300 tracking-wider">Nama Murid / MyKID</th>
-                                    <th className="px-2 py-2 text-center align-middle w-20 border-r border-slate-300">Status</th>
-                                    <th className="px-2 py-2 text-center align-middle w-16 border-r border-slate-300">Tindakan</th>
-                                    <th className="px-2 py-2 text-center align-middle w-16 border-r border-slate-300">Jantina</th>
-                                    <th className="px-2 py-2 text-center align-middle w-12 border-r border-slate-300">Umur</th>
-                                    <th className="px-2 py-2 text-center align-middle w-24 border-r border-slate-300">Tinggi (cm)</th>
-                                    <th className="px-2 py-2 text-center align-middle w-24 border-r border-slate-300">Berat (kg)</th>
-                                    <th className="px-3 py-2 text-center align-middle bg-blue-100 text-blue-900 w-20 border-r border-blue-200">BMI</th>
-                                    <th className="px-3 py-2 text-center align-middle bg-blue-100 text-blue-900 w-36 border-r border-blue-200">Status BMI</th>
-                                    {showSegak && (
-                                        <>
-                                            <th className="px-2 py-2 w-28 border-r border-slate-300 whitespace-normal text-center align-middle leading-tight">NAIK TURUN BANGKU</th>
-                                            <th className="px-2 py-2 w-24 border-r border-slate-300 whitespace-normal text-center align-middle leading-tight">TEKAN TUBI</th>
-                                            <th className="px-2 py-2 w-28 border-r border-slate-300 whitespace-normal text-center align-middle leading-tight">RINGKUK TUBI SEPARA</th>
-                                            <th className="px-2 py-2 w-28 border-r border-slate-300 whitespace-normal text-center align-middle leading-tight">JANGKAUAN MELUNJUR</th>
-                                            <th className="px-3 py-2 align-middle bg-emerald-100 text-emerald-900 text-center w-20 border-r border-emerald-200">Skor</th>
-                                            <th className="px-3 py-2 align-middle bg-emerald-100 text-emerald-900 text-center w-16 border-r border-emerald-200">Gred</th>
-                                            <th className="px-3 py-2 align-middle bg-emerald-100 text-emerald-900 w-36 text-center">Status K.</th>
-                                        </>
-                                    )}
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-200 text-xs text-slate-800">
-                                {students.map((student, idx) => {
-                                    const status = getRowStatus(student, yearLevel);
-                                    
-                                    const originalStudent = originalStudents[idx];
-                                    const isOriginallyComplete = originalStudent ? getRowStatus(originalStudent, yearLevel) === 'SELESAI' : false;
-                                    const isRowExplicitlyUnlocked = editableRows.includes(student.rowNumber);
-                                    
-                                    const canEdit = (isAuthorizedToFill && !isOriginallyComplete) || isRowExplicitlyUnlocked;
-                                    const isCompletedVisual = !canEdit;
-                                    
-                                    return (
-                                        <tr key={idx} className={`hover:bg-blue-50/50 transition-colors ${isCompletedVisual ? 'bg-slate-50 text-slate-500' : 'bg-white group'}`}>
-                                            <td className="px-2 py-1.5 text-center text-slate-500 border-r border-slate-200">{student.bil}</td>
-                                            <td className={`px-3 py-1.5 font-medium sticky left-0 z-10 border-r border-slate-200 drop-shadow-[2px_0_2px_rgba(0,0,0,0.02)] ${isCompletedVisual ? 'bg-slate-50' : 'bg-white group-hover:bg-blue-50/50'} min-w-[220px] whitespace-normal leading-tight flex flex-col justify-center`}>
-                                                <span className="text-slate-900">{student.namaMurid}</span>
-                                                {student.mykid && <span className="text-[10px] text-slate-500 font-normal">{student.mykid}</span>}
-                                            </td>
-                                            <td className="px-2 py-1.5 text-center border-r border-slate-200">
-                                                {status === 'SELESAI' && <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-emerald-300 text-[9px] font-bold bg-emerald-50 text-emerald-700 tracking-wider">SELESAI</span>}
-                                                {status === 'SEPARA SIAP' && <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-amber-300 text-[9px] font-bold bg-amber-50 text-amber-700 tracking-wider">SEPARA</span>}
-                                                {status === 'BELUM ISI' && <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-slate-300 text-[9px] font-bold bg-slate-100 text-slate-500 tracking-wider">KOSONG</span>}
-                                            </td>
-                                            <td className="px-2 py-1.5 text-center border-r border-slate-200">
-                                                {isOriginallyComplete && !isRowExplicitlyUnlocked && (
-                                                    <button 
-                                                        onClick={() => requestEditRow(student.rowNumber)}
-                                                        className="text-[9px] bg-slate-200 hover:bg-slate-300 text-slate-700 px-2 py-1 rounded font-bold transition-colors shadow-sm"
-                                                        title="Edit Baris Ini"
-                                                    >
-                                                        EDIT
-                                                    </button>
-                                                )}
-                                            </td>
-                                            <td className="px-2 py-1.5 text-center border-r border-slate-200">{student.jantina}</td>
-                                            <td className="px-2 py-1.5 text-center border-r border-slate-200">{student.umur}</td>
-                                            
-                                            <td className="px-1 py-1 border-r border-slate-200">
-                                                <input
-                                                    type="number"
-                                                    value={student.tinggi}
-                                                    onChange={e => handleInputChange(idx, 'tinggi', e.target.value)}
-                                                    disabled={!canEdit}
-                                                    className="w-full px-2 py-1 text-xs border border-slate-300 rounded shadow-inner focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 outline-none"
-                                                    placeholder="cm"
-                                                    min="0"
-                                                />
-                                            </td>
-                                            <td className="px-1 py-1 border-r border-slate-200">
-                                                <input
-                                                    type="number"
-                                                    value={student.berat}
-                                                    onChange={e => handleInputChange(idx, 'berat', e.target.value)}
-                                                    disabled={!canEdit}
-                                                    className="w-full px-2 py-1 text-xs border border-slate-300 rounded shadow-inner focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 outline-none"
-                                                    placeholder="kg"
-                                                    min="0"
-                                                />
-                                            </td>
-                                            <td className="px-3 py-1.5 font-bold text-blue-800 bg-blue-50/50 text-center border-r border-slate-200">{student.bmi || '-'}</td>
-                                            <td className="px-3 py-1.5 font-semibold text-blue-800 bg-blue-50/50 min-w-[140px] whitespace-normal leading-tight uppercase text-[10px] tracking-wide border-r border-slate-200">{student.statusBmi || '-'}</td>
-
-                                            {showSegak && (
-                                                <>
-                                                    <td className="px-1 py-1 border-r border-slate-200">
-                                                        <input
-                                                            type="number"
-                                                            value={student.naikTurunBangku}
-                                                            onChange={e => handleInputChange(idx, 'naikTurunBangku', e.target.value)}
-                                                            disabled={!canEdit}
-                                                            className="w-full px-2 py-1 text-xs border border-slate-300 rounded shadow-inner focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 outline-none"
-                                                            min="0"
-                                                        />
-                                                    </td>
-                                                    <td className="px-1 py-1 border-r border-slate-200">
-                                                        <input
-                                                            type="number"
-                                                            value={student.tekanTubi}
-                                                            onChange={e => handleInputChange(idx, 'tekanTubi', e.target.value)}
-                                                            disabled={!canEdit}
-                                                            className="w-full px-2 py-1 text-xs border border-slate-300 rounded shadow-inner focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 outline-none"
-                                                            min="0"
-                                                        />
-                                                    </td>
-                                                    <td className="px-1 py-1 border-r border-slate-200">
-                                                        <input
-                                                            type="number"
-                                                            value={student.ringkukTubiSepara}
-                                                            onChange={e => handleInputChange(idx, 'ringkukTubiSepara', e.target.value)}
-                                                            disabled={!canEdit}
-                                                            className="w-full px-2 py-1 text-xs border border-slate-300 rounded shadow-inner focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 outline-none"
-                                                            min="0"
-                                                        />
-                                                    </td>
-                                                    <td className="px-1 py-1 border-r border-slate-200">
-                                                        <input
-                                                            type="number"
-                                                            value={student.jangkauanMelunjur}
-                                                            onChange={e => handleInputChange(idx, 'jangkauanMelunjur', e.target.value)}
-                                                            disabled={!canEdit}
-                                                            className="w-full px-2 py-1 text-xs border border-slate-300 rounded shadow-inner focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 outline-none"
-                                                            min="0"
-                                                        />
-                                                    </td>
-                                                    <td className="px-3 py-1.5 font-bold text-emerald-800 bg-emerald-50/50 text-center text-[13px] border-r border-slate-200">{student.jumlahSkor || '-'}</td>
-                                                    <td className="px-3 py-1.5 font-bold text-emerald-800 bg-emerald-50/50 text-center text-[13px] border-r border-slate-200">{student.gred || '-'}</td>
-                                                    <td className="px-3 py-1.5 font-semibold text-emerald-800 bg-emerald-50/50 min-w-[140px] whitespace-normal leading-tight uppercase text-[10px] tracking-wide">{student.statusKecergasan || '-'}</td>
-                                                </>
-                                            )}
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <div className="sticky bottom-0 z-40 flex flex-col drop-shadow-[0_-4px_8px_rgba(0,0,0,0.05)] rounded-b-md">
-                        {/* Floating Horizontal Scrollbar */}
-                        <div ref={topScrollRef} className="overflow-x-auto w-full bg-white/70 hover:bg-slate-50/90 backdrop-blur-md transition-colors border-t border-slate-300">
-                            <div style={{ height: '12px' }}></div>
-                        </div>
-
-                        {/* Save Footer Container (Also acts as anchor) */}
-                        <div className="bg-slate-100 px-4 py-3 border-t border-slate-300 flex flex-col sm:flex-row items-center justify-between gap-4 rounded-b-md relative z-20">
-                            <div className="text-[11px] text-slate-600 font-medium tracking-wide">
-                                Hanya baris yang diubah (SEPARA/SELESAI) akan dihantar.
-                                Pastikan data tepat sebelum klik butang simpan.
-                            </div>
-                            <button
-                                onClick={handleSave}
-                                disabled={saving}
-                                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-2 bg-blue-700 hover:bg-blue-800 text-white font-semibold rounded text-sm shadow-sm focus:ring-2 focus:ring-blue-500/50 transition-colors disabled:opacity-75 disabled:cursor-not-allowed"
-                            >
-                                {saving ? (
-                                    <>
-                                        <RefreshCw className="w-4 h-4 animate-spin" />
-                                        Menyimpan...
-                                    </>
-                                ) : (
-                                    <>
-                                        <Save className="w-4 h-4" />
-                                        Simpan ({students.filter((s, idx) => JSON.stringify(s) !== JSON.stringify(originalStudents[idx])).length})
-                                    </>
-                                )}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )
-        )}
-      </main>
-
-        {showPasswordModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-[2px]">
-              <div className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col">
-                  <div className="bg-blue-800 px-4 py-3 border-b border-blue-900">
-                      <h3 className="text-white font-semibold text-sm tracking-wide">MASUKKAN PASSWORD</h3>
-                  </div>
-                  <form onSubmit={handlePasswordSubmit} className="p-5 flex flex-col gap-4">
-                      <div>
-                          <input
-                              type="password"
-                              value={passwordInput}
-                              onChange={(e) => {
-                                  setPasswordInput(e.target.value);
-                                  setPasswordError(null);
-                              }}
-                              className={`w-full px-3 py-2 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${passwordError ? 'border-red-500' : 'border-slate-300'}`}
-                              placeholder="Kata Laluan"
-                              autoFocus
-                          />
-                          {passwordError && (
-                              <p className="text-red-500 text-xs mt-1.5 font-medium">{passwordError}</p>
-                          )}
-                      </div>
-                      <div className="flex justify-end gap-3 mt-2">
-                          <button
-                              type="button"
-                              onClick={closePasswordModal}
-                              className="px-4 py-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded text-sm font-semibold transition-colors"
-                          >
-                              BATAL
-                          </button>
-                          <button
-                              type="submit"
-                              className="px-4 py-2 text-white bg-blue-700 hover:bg-blue-800 rounded text-sm font-semibold transition-colors shadow-sm"
-                          >
-                              SAHKAN
-                          </button>
-                      </div>
-                  </form>
-              </div>
+        <section className="bg-white border border-slate-200 rounded-xl shadow-sm p-4">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div><h2 className="font-bold text-sm">PILIH KELAS</h2><p className="text-xs text-slate-500">Senarai ini dibaca terus daripada Portal Koku untuk sesi {selectedYear}.</p></div>
+            <button onClick={fetchClasses} disabled={loadingClasses} className="text-xs px-3 py-2 rounded bg-slate-100 hover:bg-slate-200 flex items-center gap-1.5"><RefreshCw className={`w-4 h-4 ${loadingClasses?'animate-spin':''}`}/>Muat Semula</button>
           </div>
-        )}
-      {/* Bottom Status Section */}
-      <section className="px-4 pb-8">
-        <div className="max-w-7xl mx-auto bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-            <div className="flex flex-col sm:flex-row items-center justify-between mb-6 gap-3">
-                <h2 className="text-lg font-bold text-slate-800 tracking-tight">STATUS PENGISIAN SISTEM BMI 5-9T & SEGAK</h2>
-                <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-3 py-1 rounded-full">Paparan status semasa: Pengisian {selectedPengisian}</span>
+          {loadingClasses ? <div className="py-5 text-sm text-slate-500 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/>Memuatkan kelas...</div> : classes.length ? <div className="flex flex-wrap gap-2">{classes.map(cls => <button key={cls} onClick={() => setSelectedClass(cls)} className={`px-4 py-2 rounded-lg border text-sm font-bold transition ${selectedClass===cls?'bg-blue-700 border-blue-700 text-white':'bg-white border-slate-300 hover:border-blue-400 hover:text-blue-700'}`}>{cls}</button>)}</div> : <div className="py-5 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3">Belum ada kelas/murid untuk sesi {selectedYear} dalam Supabase Portal Koku.</div>}
+        </section>
+
+        {selectedClass && (
+          <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+            <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div><h2 className="font-bold">KELAS {selectedClass} · PENGISIAN {selectedPengisian}</h2><p className="text-xs text-slate-500">{classInfo?.className || ''}{classInfo?.classTeacherName ? ` · Guru Kelas: ${classInfo.classTeacherName}` : ''}</p></div>
+              <div className="flex flex-wrap gap-2">
+                {yearLevel >= 4 && <button onClick={downloadClass} disabled={downloadingClass || !students.length} className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">{downloadingClass?<Loader2 className="w-4 h-4 animate-spin"/>:<FileDown className="w-4 h-4"/>} PDF KPM KELAS</button>}
+                <button onClick={handleSave} disabled={saving || !changedStudents.length} className="px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">{saving?<Loader2 className="w-4 h-4 animate-spin"/>:<Save className="w-4 h-4"/>} SIMPAN ({changedStudents.length})</button>
+              </div>
             </div>
-            
-            {loadingStatusSection ? (
-                <div className="flex justify-center p-8 text-slate-500"><Loader2 className="w-6 h-6 animate-spin text-blue-500 mr-2"/> Memuatkan status...</div>
-            ) : (
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
-                    <table className="w-full text-xs text-left">
-                        <thead className="bg-slate-100 text-slate-600 uppercase font-semibold">
-                            <tr>
-                                <th className="px-4 py-3 border-r border-slate-200">KELAS</th>
-                                <th className="px-4 py-3 border-r border-slate-200">BMI</th>
-                                <th className="px-4 py-3">SEGAK</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {classStatusList.map(status => (
-                                <tr key={status.className} className="hover:bg-slate-50">
-                                    <td className="px-4 py-3 font-bold text-slate-800 border-r border-slate-200">{status.className}</td>
-                                    <td className="px-4 py-3 border-r border-slate-200">
-                                        {status.bmiComplete ? (
-                                            <div className="flex items-center text-emerald-600"><CheckCircle2 className="w-4 h-4 mr-1.5" /> SELESAI PENGISIAN</div>
-                                        ) : (
-                                            <div className="flex items-center text-red-600"><XCircle className="w-4 h-4 mr-1.5" /> BELUM SELESAI PENGISIAN</div>
-                                        )}
-                                    </td>
-                                    <td className="px-4 py-3">
-                                        {status.yearLevel >= 4 ? (
-                                            status.segakComplete ? (
-                                                <div className="flex items-center text-emerald-600"><CheckCircle2 className="w-4 h-4 mr-1.5" /> SELESAI PENGISIAN</div>
-                                            ) : (
-                                                <div className="flex items-center text-red-600"><XCircle className="w-4 h-4 mr-1.5" /> BELUM SELESAI PENGISIAN</div>
-                                            )
-                                        ) : (
-                                            <span className="text-slate-400">-</span>
-                                        )}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+
+            {loadingStudents ? <div className="p-10 text-center text-slate-500"><Loader2 className="w-6 h-6 animate-spin mx-auto mb-2"/>Memuatkan data murid...</div> : (
+              <div className="overflow-x-auto">
+                <table className="min-w-[1750px] w-full text-xs border-collapse">
+                  <thead className="bg-slate-100 text-slate-700 uppercase sticky top-[64px] z-20">
+                    <tr>
+                      <th className="p-2 border border-slate-200 w-12">Bil</th>
+                      <th className="p-2 border border-slate-200 min-w-[300px]">Nama Murid</th>
+                      <th className="p-2 border border-slate-200 min-w-[125px]">Jantina</th>
+                      <th className="p-2 border border-slate-200 min-w-[140px]">MyKid / Sijil Beranak</th>
+                      <th className="p-2 border border-slate-200 min-w-[135px]">Tel. Penjaga</th>
+                      <th className="p-2 border border-slate-200 w-20">Umur</th>
+                      <th className="p-2 border border-slate-200 w-24">Tinggi (cm)</th>
+                      <th className="p-2 border border-slate-200 w-24">Berat (kg)</th>
+                      <th className="p-2 border border-slate-200 w-20">BMI</th>
+                      <th className="p-2 border border-slate-200 min-w-[150px]">Status BMI</th>
+                      {yearLevel >= 4 && <><th className="p-2 border border-slate-200 w-32">Tarikh Ujian</th><th className="p-2 border border-slate-200 w-28">Naik Turun Bangku</th><th className="p-2 border border-slate-200 w-24">Tekan Tubi</th><th className="p-2 border border-slate-200 w-28">Ringkuk Tubi</th><th className="p-2 border border-slate-200 w-24">Jangkauan</th><th className="p-2 border border-slate-200 w-20">Skor</th><th className="p-2 border border-slate-200 w-16">Gred</th><th className="p-2 border border-slate-200 min-w-[150px]">Kecergasan</th></>}
+                      <th className="p-2 border border-slate-200 w-28">Status</th>
+                      {yearLevel >= 4 && <th className="p-2 border border-slate-200 w-24">Borang KPM</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {students.map((student, index) => {
+                      const status = getRowStatus(student, yearLevel);
+                      const statusClass = status === 'SELESAI' ? 'bg-emerald-50 text-emerald-700' : status === 'SEPARA SIAP' ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-500';
+                      return <tr key={student.studentId} className="hover:bg-blue-50/30">
+                        <td className="p-2 border border-slate-200 text-center font-semibold">{student.bil}</td>
+                        <td className="p-2 border border-slate-200 font-semibold text-slate-800">{student.namaMurid}</td>
+                        <td className="p-1 border border-slate-200"><select value={student.jantina} onChange={e=>updateStudent(index,'jantina',e.target.value)} className={`w-full border rounded px-2 py-1.5 bg-white ${student.jantinaPerluSemak&&!student.jantina?'border-amber-400':'border-slate-300'}`}><option value="">-- PILIH --</option><option value="LELAKI">LELAKI</option><option value="PEREMPUAN">PEREMPUAN</option></select></td>
+                        <td className="p-1 border border-slate-200"><input value={student.mykid} onChange={e=>updateStudent(index,'mykid',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5" placeholder="Optional"/></td>
+                        <td className="p-1 border border-slate-200"><input value={student.noTelPenjaga} onChange={e=>updateStudent(index,'noTelPenjaga',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5" placeholder="Optional"/></td>
+                        <td className="p-1 border border-slate-200"><input type="number" value={student.umur} onChange={e=>updateStudent(index,'umur',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
+                        <td className="p-1 border border-slate-200"><input type="number" step="0.1" value={student.tinggi} onChange={e=>updateStudent(index,'tinggi',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
+                        <td className="p-1 border border-slate-200"><input type="number" step="0.1" value={student.berat} onChange={e=>updateStudent(index,'berat',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
+                        <td className="p-2 border border-slate-200 text-center font-bold bg-blue-50">{student.bmi || '-'}</td>
+                        <td className="p-2 border border-slate-200 font-semibold bg-blue-50">{student.statusBmi || (student.tinggi&&student.berat&&!student.jantina?'PILIH JANTINA':'-')}</td>
+                        {yearLevel >= 4 && <>
+                          <td className="p-1 border border-slate-200"><input type="date" value={student.tarikhUjian || ''} onChange={e=>updateStudent(index,'tarikhUjian',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
+                          <td className="p-1 border border-slate-200"><input type="number" value={student.naikTurunBangku} onChange={e=>updateStudent(index,'naikTurunBangku',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
+                          <td className="p-1 border border-slate-200"><input type="number" value={student.tekanTubi} onChange={e=>updateStudent(index,'tekanTubi',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
+                          <td className="p-1 border border-slate-200"><input type="number" value={student.ringkukTubiSepara} onChange={e=>updateStudent(index,'ringkukTubiSepara',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
+                          <td className="p-1 border border-slate-200"><input type="number" value={student.jangkauanMelunjur} onChange={e=>updateStudent(index,'jangkauanMelunjur',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
+                          <td className="p-2 border border-slate-200 text-center font-bold bg-emerald-50">{student.jumlahSkor || '-'}</td>
+                          <td className="p-2 border border-slate-200 text-center font-bold bg-emerald-50">{student.gred || '-'}</td>
+                          <td className="p-2 border border-slate-200 text-[10px] font-semibold bg-emerald-50">{student.statusKecergasan || '-'}</td>
+                        </>}
+                        <td className={`p-2 border border-slate-200 text-center font-bold text-[10px] ${statusClass}`}>{status}</td>
+                        {yearLevel >= 4 && <td className="p-1 border border-slate-200 text-center"><button onClick={()=>downloadStudent(student)} disabled={downloadingStudent===student.studentId} className="px-2 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded text-[10px] font-semibold inline-flex items-center gap-1">{downloadingStudent===student.studentId?<Loader2 className="w-3 h-3 animate-spin"/>:<Download className="w-3 h-3"/>} PDF</button></td>}
+                      </tr>;
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
-        </div>
-      </section>
+            <div className="p-3 border-t border-slate-200 bg-slate-50 flex justify-between text-[11px] text-slate-600"><span>Jumlah murid: <b>{students.length}</b></span><span>Skor/gred hanya dikira selepas semua 4 ujian SEGAK lengkap.</span></div>
+          </section>
+        )}
+
+        <section className="bg-white border border-slate-200 rounded-xl shadow-sm p-4">
+          <div className="flex items-center justify-between mb-3"><div><h2 className="font-bold text-sm">STATUS PENGISIAN</h2><p className="text-xs text-slate-500">Sesi {selectedYear} · Pengisian {selectedPengisian}</p></div>{loadingStatuses&&<Loader2 className="w-4 h-4 animate-spin text-blue-600"/>}</div>
+          <div className="overflow-x-auto rounded-lg border border-slate-200">
+            <table className="w-full text-xs"><thead className="bg-slate-100"><tr><th className="p-3 text-left">KELAS</th><th className="p-3 text-left">MURID</th><th className="p-3 text-left">BMI</th><th className="p-3 text-left">SEGAK</th></tr></thead><tbody className="divide-y divide-slate-100">{classStatuses.map(s=><tr key={s.className}><td className="p-3 font-bold">{s.className}</td><td className="p-3">{s.totalStudents}</td><td className="p-3">{s.bmiComplete?<span className="text-emerald-600 font-semibold flex items-center gap-1"><CheckCircle2 className="w-4 h-4"/>SELESAI</span>:<span className="text-red-600 font-semibold flex items-center gap-1"><XCircle className="w-4 h-4"/>BELUM SELESAI</span>}</td><td className="p-3">{s.yearLevel<4?<span className="text-slate-400">-</span>:s.segakComplete?<span className="text-emerald-600 font-semibold flex items-center gap-1"><CheckCircle2 className="w-4 h-4"/>SELESAI</span>:<span className="text-red-600 font-semibold flex items-center gap-1"><XCircle className="w-4 h-4"/>BELUM SELESAI</span>}</td></tr>)}</tbody></table>
+          </div>
+        </section>
+      </main>
     </div>
   );
 }
