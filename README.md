@@ -77,3 +77,10 @@ Jalankan migration `001_segak_schema.sql`, tetapkan nilai `segak_settings.app_pa
 - Status pengisian berasingan di bawah jadual dibuang kerana status kini berada pada kad kelas.
 - Horizontal scrollbar tambahan diletakkan di bahagian atas jadual dan diselaraskan dengan scrollbar bawah.
 - Data Tahap 2 lama disemak semula daripada Google Sheet 2026 dan nilai yang benar-benar wujud dipulihkan.
+
+## Kemaskini 22-09-2026 (scroll + Borang BMI 5-9T)
+- Jadual murid kini menggunakan ruang scroll dalaman (`max-height: 68vh`) supaya horizontal scrollbar sentiasa berada di bawah ruang jadual yang sedang dipaparkan; tak perlu turun sampai murid terakhir.
+- Header jadual kekal sticky di atas ruang senarai semasa scroll.
+- Tahun 1, 2 dan 3 kini ada butang PDF murid dan `PDF KPM KELAS`.
+- Tahap 1 menggunakan template rasmi Borang BMI 5-9T dua muka surat. Data Tahun 1/2/3 dipetakan ke umur 7/8/9, termasuk Pengisian 1 dan 2, tinggi (m), berat, BMI/status, MyKid, jantina dan telefon penjaga.
+- Edge Function `segak-api` dikemas kini supaya sejarah PDF boleh membaca rekod Tahun 1 hingga Tahun 6. Table/fungsi Portal Koku asal tidak diubah.

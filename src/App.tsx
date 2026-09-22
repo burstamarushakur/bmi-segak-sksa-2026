@@ -22,6 +22,7 @@ import {
 } from './lib/calculations';
 import { apiCall, hasApiUrl } from './lib/api';
 import { BssrHistory, downloadClassBssrPdf, downloadStudentBssrPdf } from './lib/bssrPdf';
+import { downloadClassBmi59Pdf, downloadStudentBmi59Pdf } from './lib/bmi59Pdf';
 
 interface Student {
   rowNumber: number;
@@ -166,16 +167,10 @@ export default function App() {
   const [downloadingClass, setDownloadingClass] = useState(false);
   const [downloadingStudent, setDownloadingStudent] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
-  const topScrollRef = useRef<HTMLDivElement | null>(null);
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
 
   const yearLevel = selectedClass ? getYearFromClassName(selectedClass) : 0;
   const tableMinWidth = yearLevel >= 4 ? 2050 : 1200;
-
-  const syncScroll = (source: HTMLDivElement | null, target: HTMLDivElement | null) => {
-    if (!source || !target) return;
-    if (Math.abs(target.scrollLeft - source.scrollLeft) > 1) target.scrollLeft = source.scrollLeft;
-  };
 
   const changedStudents = useMemo(
     () => students.filter((student, index) => JSON.stringify(student) !== JSON.stringify(originalStudents[index])),
@@ -354,7 +349,9 @@ export default function App() {
         studentId: student.studentId,
         namaMurid: student.namaMurid,
       });
-      await downloadStudentBssrPdf(data.history as BssrHistory, selectedYear);
+      const history = data.history as BssrHistory;
+      if (yearLevel <= 3) await downloadStudentBmi59Pdf(history, selectedYear);
+      else await downloadStudentBssrPdf(history, selectedYear);
     } catch (error: any) {
       setMessage({ type: 'error', text: error.message || 'PDF murid gagal dijana.' });
     } finally {
@@ -363,11 +360,13 @@ export default function App() {
   };
 
   const downloadClass = async () => {
-    if (!selectedClass || yearLevel < 4) return;
+    if (!selectedClass) return;
     setDownloadingClass(true);
     try {
       const data: any = await apiCall('getClassBssr', { year: selectedYear, className: selectedClass });
-      await downloadClassBssrPdf((data.histories || []) as BssrHistory[], selectedYear, selectedClass);
+      const histories = (data.histories || []) as BssrHistory[];
+      if (yearLevel <= 3) await downloadClassBmi59Pdf(histories, selectedYear, selectedClass);
+      else await downloadClassBssrPdf(histories, selectedYear, selectedClass);
     } catch (error: any) {
       setMessage({ type: 'error', text: error.message || 'PDF kelas gagal dijana.' });
     } finally {
@@ -481,19 +480,20 @@ export default function App() {
             <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
               <div><h2 className="font-bold">KELAS {selectedClass} · PENGISIAN {selectedPengisian}</h2><p className="text-xs text-slate-500">{classInfo?.className || ''}{classInfo?.classTeacherName ? ` · Guru Kelas: ${classInfo.classTeacherName}` : ''}</p></div>
               <div className="flex flex-wrap gap-2">
-                {yearLevel >= 4 && <button onClick={downloadClass} disabled={downloadingClass || !students.length} className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">{downloadingClass?<Loader2 className="w-4 h-4 animate-spin"/>:<FileDown className="w-4 h-4"/>} PDF KPM KELAS</button>}
+                <button onClick={downloadClass} disabled={downloadingClass || !students.length} className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">{downloadingClass?<Loader2 className="w-4 h-4 animate-spin"/>:<FileDown className="w-4 h-4"/>} PDF KPM KELAS</button>
                 <button onClick={handleSave} disabled={saving || !changedStudents.length} className="px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50">{saving?<Loader2 className="w-4 h-4 animate-spin"/>:<Save className="w-4 h-4"/>} SIMPAN ({changedStudents.length})</button>
               </div>
             </div>
 
             {loadingStudents ? <div className="p-10 text-center text-slate-500"><Loader2 className="w-6 h-6 animate-spin mx-auto mb-2"/>Memuatkan data murid...</div> : (
               <div>
-                <div ref={topScrollRef} onScroll={() => syncScroll(topScrollRef.current, tableScrollRef.current)} className="overflow-x-auto border-b border-slate-200 bg-slate-50 sticky top-[70px] z-30" title="Skrol kiri/kanan">
-                  <div style={{ width: `${tableMinWidth}px`, height: '1px' }} />
+                <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-[11px] text-slate-500 flex items-center justify-between gap-3">
+                  <span>Senarai murid</span>
+                  <span className="font-semibold text-slate-600">↔ Scroll kiri/kanan sentiasa tersedia di bawah ruang jadual</span>
                 </div>
-                <div ref={tableScrollRef} onScroll={() => syncScroll(tableScrollRef.current, topScrollRef.current)} className="overflow-x-auto">
+                <div ref={tableScrollRef} className="overflow-auto overscroll-contain" style={{ maxHeight: '68vh', minHeight: '320px' }}>
                 <table style={{ minWidth: `${tableMinWidth}px` }} className="w-full text-xs border-collapse">
-                  <thead className="bg-slate-100 text-slate-700 uppercase">
+                  <thead className="bg-slate-100 text-slate-700 uppercase sticky top-0 z-20 shadow-sm">
                     <tr>
                       <th className="p-2 border border-slate-200 w-12">Bil</th>
                       <th className="p-2 border border-slate-200 min-w-[300px]">Nama Murid</th>
@@ -507,7 +507,7 @@ export default function App() {
                       <th className="p-2 border border-slate-200 min-w-[150px]">Status BMI</th>
                       {yearLevel >= 4 && <><th className="p-2 border border-slate-200 w-32">Tarikh Ujian</th><th className="p-2 border border-slate-200 w-28">Naik Turun Bangku</th><th className="p-2 border border-slate-200 w-24">Tekan Tubi</th><th className="p-2 border border-slate-200 w-28">Ringkuk Tubi</th><th className="p-2 border border-slate-200 w-24">Jangkauan</th><th className="p-2 border border-slate-200 w-20">Skor</th><th className="p-2 border border-slate-200 w-16">Gred</th><th className="p-2 border border-slate-200 min-w-[150px]">Kecergasan</th></>}
                       <th className="p-2 border border-slate-200 w-28">Status</th>
-                      {yearLevel >= 4 && <th className="p-2 border border-slate-200 w-24">Borang KPM</th>}
+                      <th className="p-2 border border-slate-200 w-24">Borang KPM</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -536,7 +536,7 @@ export default function App() {
                           <td className="p-2 border border-slate-200 text-[10px] font-semibold bg-emerald-50">{student.statusKecergasan || '-'}</td>
                         </>}
                         <td className={`p-2 border border-slate-200 text-center font-bold text-[10px] ${statusClass}`}>{status}</td>
-                        {yearLevel >= 4 && <td className="p-1 border border-slate-200 text-center"><button onClick={()=>downloadStudent(student)} disabled={downloadingStudent===student.studentId} className="px-2 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded text-[10px] font-semibold inline-flex items-center gap-1">{downloadingStudent===student.studentId?<Loader2 className="w-3 h-3 animate-spin"/>:<Download className="w-3 h-3"/>} PDF</button></td>}
+                        <td className="p-1 border border-slate-200 text-center"><button onClick={()=>downloadStudent(student)} disabled={downloadingStudent===student.studentId} className="px-2 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded text-[10px] font-semibold inline-flex items-center gap-1">{downloadingStudent===student.studentId?<Loader2 className="w-3 h-3 animate-spin"/>:<Download className="w-3 h-3"/>} PDF</button></td>
                       </tr>;
                     })}
                   </tbody>
