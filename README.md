@@ -28,8 +28,8 @@ Migrasi Google Sheet 2026 telah dibuat di server:
 
 - 407 profil murid berjaya dipadankan kepada `student_id` master Portal Koku.
 - 407/407 staging row berjaya dipadankan.
-- 282 rekod yang benar-benar mempunyai data BMI/SEGAK dimasukkan ke `segak_records`.
-- Derived value seperti BMI dikira semula; data lama yang kosong kekal kosong.
+- 412 rekod BMI/SEGAK 2026 yang mempunyai data lama telah dipulihkan ke `segak_records` selepas semakan semula Tahap 2.
+- Derived value seperti BMI dikira semula. Untuk SEGAK, hanya nilai yang memang wujud dalam Google Sheet lama dipulihkan; ruangan yang memang kosong dalam sheet kekal kosong supaya tiada data direka.
 - Seed yang mengandungi nama/data murid **tidak dimasukkan dalam repo ini** untuk privasi.
 
 ## Fungsi aplikasi
@@ -67,3 +67,13 @@ URL API default sudah ditetapkan kepada Edge Function live. Jika mahu override, 
 ## Jika backend perlu dipasang semula pada masa depan
 
 Jalankan migration `001_segak_schema.sql`, tetapkan nilai `segak_settings.app_password_sha256` secara server-side (jangan commit hash sebenar ke GitHub), kemudian jalankan `002_segak_readonly_bridge.sql`. Deploy folder `supabase/functions/segak-api` sebagai Edge Function bernama `segak-api` dengan Verify JWT OFF. Function menggunakan custom app-password authentication sebelum apa-apa operasi.
+
+
+## Kemas kini UI September 2026
+
+- Logo SKSA dipaparkan pada skrin login dan header sistem.
+- Checklist status BMI/SEGAK dipaparkan terus pada kad setiap kelas.
+- Header jadual tidak lagi sticky/bertindih dengan nama murid.
+- Status pengisian berasingan di bawah jadual dibuang kerana status kini berada pada kad kelas.
+- Horizontal scrollbar tambahan diletakkan di bahagian atas jadual dan diselaraskan dengan scrollbar bawah.
+- Data Tahap 2 lama disemak semula daripada Google Sheet 2026 dan nilai yang benar-benar wujud dipulihkan.

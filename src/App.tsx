@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -58,9 +58,13 @@ type ClassStatus = {
   className: string;
   yearLevel: number;
   totalStudents: number;
+  bmiFilled: number;
+  segakFilled: number;
   bmiComplete: boolean;
   segakComplete: boolean;
 };
+
+const SCHOOL_LOGO_URL = 'https://i.postimg.cc/3RF9M05N/Logo-SKSA.png';
 
 const emptyToNumber = (value: unknown) => {
   if (value === '' || value === null || value === undefined) return null;
@@ -162,8 +166,17 @@ export default function App() {
   const [downloadingClass, setDownloadingClass] = useState(false);
   const [downloadingStudent, setDownloadingStudent] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
+  const topScrollRef = useRef<HTMLDivElement | null>(null);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
 
   const yearLevel = selectedClass ? getYearFromClassName(selectedClass) : 0;
+  const tableMinWidth = yearLevel >= 4 ? 2050 : 1200;
+
+  const syncScroll = (source: HTMLDivElement | null, target: HTMLDivElement | null) => {
+    if (!source || !target) return;
+    if (Math.abs(target.scrollLeft - source.scrollLeft) > 1) target.scrollLeft = source.scrollLeft;
+  };
+
   const changedStudents = useMemo(
     () => students.filter((student, index) => JSON.stringify(student) !== JSON.stringify(originalStudents[index])),
     [students, originalStudents],
@@ -376,7 +389,15 @@ export default function App() {
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
         <div className="w-full max-w-md bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden">
           <div className="bg-blue-900 text-white p-6">
-            <div className="flex items-center gap-3"><ShieldCheck className="w-8 h-8"/><div><h1 className="font-bold text-lg">BMI & SEGAK SKSA</h1><p className="text-blue-100 text-xs">Supabase Edition · Data kelas daripada Portal Koku</p></div></div>
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded-xl bg-white p-1.5 shadow-sm shrink-0 flex items-center justify-center">
+                <img src={SCHOOL_LOGO_URL} alt="Logo SKSA" className="max-w-full max-h-full object-contain" />
+              </div>
+              <div>
+                <h1 className="font-bold text-lg">BMI & SEGAK SKSA</h1>
+                <p className="text-blue-100 text-xs">Supabase Edition · Data kelas daripada Portal Koku</p>
+              </div>
+            </div>
           </div>
           <form onSubmit={e => { e.preventDefault(); authenticate(passwordInput); }} className="p-6 space-y-4">
             <div>
@@ -397,9 +418,14 @@ export default function App() {
     <div className="min-h-screen bg-slate-100 text-slate-800">
       <header className="bg-blue-950 text-white shadow-md sticky top-0 z-50">
         <div className="max-w-[1800px] mx-auto px-4 py-3 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          <div>
-            <h1 className="font-bold tracking-wide">SISTEM BMI & SEGAK SKSA</h1>
-            <p className="text-[11px] text-blue-200">{schoolName} · Master murid/kelas: Supabase Portal Koku</p>
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-lg bg-white p-1 shrink-0 flex items-center justify-center">
+              <img src={SCHOOL_LOGO_URL} alt="Logo SKSA" className="max-w-full max-h-full object-contain" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="font-bold tracking-wide">SISTEM BMI & SEGAK SKSA</h1>
+              <p className="text-[11px] text-blue-200 truncate">{schoolName} · Master murid/kelas: Supabase Portal Koku</p>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <select value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))} className="bg-white text-slate-800 text-sm rounded px-3 py-2 font-semibold">
@@ -421,7 +447,33 @@ export default function App() {
             <div><h2 className="font-bold text-sm">PILIH KELAS</h2><p className="text-xs text-slate-500">Senarai ini dibaca terus daripada Portal Koku untuk sesi {selectedYear}.</p></div>
             <button onClick={fetchClasses} disabled={loadingClasses} className="text-xs px-3 py-2 rounded bg-slate-100 hover:bg-slate-200 flex items-center gap-1.5"><RefreshCw className={`w-4 h-4 ${loadingClasses?'animate-spin':''}`}/>Muat Semula</button>
           </div>
-          {loadingClasses ? <div className="py-5 text-sm text-slate-500 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/>Memuatkan kelas...</div> : classes.length ? <div className="flex flex-wrap gap-2">{classes.map(cls => <button key={cls} onClick={() => setSelectedClass(cls)} className={`px-4 py-2 rounded-lg border text-sm font-bold transition ${selectedClass===cls?'bg-blue-700 border-blue-700 text-white':'bg-white border-slate-300 hover:border-blue-400 hover:text-blue-700'}`}>{cls}</button>)}</div> : <div className="py-5 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3">Belum ada kelas/murid untuk sesi {selectedYear} dalam Supabase Portal Koku.</div>}
+          {loadingClasses ? <div className="py-5 text-sm text-slate-500 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/>Memuatkan kelas...</div> : classes.length ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 xl:grid-cols-9 gap-2">
+              {classes.map(cls => {
+                const status = classStatuses.find(s => s?.className === cls);
+                const yl = status?.yearLevel || getYearFromClassName(cls);
+                const total = status?.totalStudents || 0;
+                return (
+                  <button key={cls} onClick={() => setSelectedClass(cls)} className={`rounded-xl border p-2.5 text-left transition min-h-[86px] ${selectedClass===cls?'bg-blue-700 border-blue-700 text-white shadow-sm':'bg-white border-slate-300 hover:border-blue-400 hover:shadow-sm'}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-base font-extrabold">{cls}</span>
+                      {selectedClass===cls && <CheckCircle2 className="w-4 h-4 shrink-0"/>}
+                    </div>
+                    <div className="mt-2 space-y-1 text-[10px] font-semibold">
+                      <div className={`flex items-center gap-1 ${selectedClass===cls?'text-blue-50':status?.bmiComplete?'text-emerald-700':'text-slate-600'}`}>
+                        {status?.bmiComplete ? <CheckCircle2 className="w-3.5 h-3.5"/> : <XCircle className="w-3.5 h-3.5"/>}
+                        <span>BMI: {status ? (status.bmiComplete ? `SELESAI (${status.bmiFilled}/${total})` : `BELUM (${status.bmiFilled}/${total})`) : '...'}</span>
+                      </div>
+                      {yl >= 4 && <div className={`flex items-center gap-1 ${selectedClass===cls?'text-blue-50':status?.segakComplete?'text-emerald-700':'text-slate-600'}`}>
+                        {status?.segakComplete ? <CheckCircle2 className="w-3.5 h-3.5"/> : <XCircle className="w-3.5 h-3.5"/>}
+                        <span>SEGAK: {status ? (status.segakComplete ? `SELESAI (${status.segakFilled}/${total})` : `BELUM (${status.segakFilled}/${total})`) : '...'}</span>
+                      </div>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : <div className="py-5 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3">Belum ada kelas/murid untuk sesi {selectedYear} dalam Supabase Portal Koku.</div>}
         </section>
 
         {selectedClass && (
@@ -435,9 +487,13 @@ export default function App() {
             </div>
 
             {loadingStudents ? <div className="p-10 text-center text-slate-500"><Loader2 className="w-6 h-6 animate-spin mx-auto mb-2"/>Memuatkan data murid...</div> : (
-              <div className="overflow-x-auto">
-                <table className="min-w-[1750px] w-full text-xs border-collapse">
-                  <thead className="bg-slate-100 text-slate-700 uppercase sticky top-[64px] z-20">
+              <div>
+                <div ref={topScrollRef} onScroll={() => syncScroll(topScrollRef.current, tableScrollRef.current)} className="overflow-x-auto border-b border-slate-200 bg-slate-50 sticky top-[70px] z-30" title="Skrol kiri/kanan">
+                  <div style={{ width: `${tableMinWidth}px`, height: '1px' }} />
+                </div>
+                <div ref={tableScrollRef} onScroll={() => syncScroll(tableScrollRef.current, topScrollRef.current)} className="overflow-x-auto">
+                <table style={{ minWidth: `${tableMinWidth}px` }} className="w-full text-xs border-collapse">
+                  <thead className="bg-slate-100 text-slate-700 uppercase">
                     <tr>
                       <th className="p-2 border border-slate-200 w-12">Bil</th>
                       <th className="p-2 border border-slate-200 min-w-[300px]">Nama Murid</th>
@@ -474,7 +530,7 @@ export default function App() {
                           <td className="p-1 border border-slate-200"><input type="number" value={student.naikTurunBangku} onChange={e=>updateStudent(index,'naikTurunBangku',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
                           <td className="p-1 border border-slate-200"><input type="number" value={student.tekanTubi} onChange={e=>updateStudent(index,'tekanTubi',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
                           <td className="p-1 border border-slate-200"><input type="number" value={student.ringkukTubiSepara} onChange={e=>updateStudent(index,'ringkukTubiSepara',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
-                          <td className="p-1 border border-slate-200"><input type="number" value={student.jangkauanMelunjur} onChange={e=>updateStudent(index,'jangkauanMelunjur',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
+                          <td className="p-1 border border-slate-200"><input type="number" step="0.5" value={student.jangkauanMelunjur} onChange={e=>updateStudent(index,'jangkauanMelunjur',e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-center"/></td>
                           <td className="p-2 border border-slate-200 text-center font-bold bg-emerald-50">{student.jumlahSkor || '-'}</td>
                           <td className="p-2 border border-slate-200 text-center font-bold bg-emerald-50">{student.gred || '-'}</td>
                           <td className="p-2 border border-slate-200 text-[10px] font-semibold bg-emerald-50">{student.statusKecergasan || '-'}</td>
@@ -485,18 +541,13 @@ export default function App() {
                     })}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
             <div className="p-3 border-t border-slate-200 bg-slate-50 flex justify-between text-[11px] text-slate-600"><span>Jumlah murid: <b>{students.length}</b></span><span>Skor/gred hanya dikira selepas semua 4 ujian SEGAK lengkap.</span></div>
           </section>
         )}
 
-        <section className="bg-white border border-slate-200 rounded-xl shadow-sm p-4">
-          <div className="flex items-center justify-between mb-3"><div><h2 className="font-bold text-sm">STATUS PENGISIAN</h2><p className="text-xs text-slate-500">Sesi {selectedYear} · Pengisian {selectedPengisian}</p></div>{loadingStatuses&&<Loader2 className="w-4 h-4 animate-spin text-blue-600"/>}</div>
-          <div className="overflow-x-auto rounded-lg border border-slate-200">
-            <table className="w-full text-xs"><thead className="bg-slate-100"><tr><th className="p-3 text-left">KELAS</th><th className="p-3 text-left">MURID</th><th className="p-3 text-left">BMI</th><th className="p-3 text-left">SEGAK</th></tr></thead><tbody className="divide-y divide-slate-100">{classStatuses.map(s=><tr key={s.className}><td className="p-3 font-bold">{s.className}</td><td className="p-3">{s.totalStudents}</td><td className="p-3">{s.bmiComplete?<span className="text-emerald-600 font-semibold flex items-center gap-1"><CheckCircle2 className="w-4 h-4"/>SELESAI</span>:<span className="text-red-600 font-semibold flex items-center gap-1"><XCircle className="w-4 h-4"/>BELUM SELESAI</span>}</td><td className="p-3">{s.yearLevel<4?<span className="text-slate-400">-</span>:s.segakComplete?<span className="text-emerald-600 font-semibold flex items-center gap-1"><CheckCircle2 className="w-4 h-4"/>SELESAI</span>:<span className="text-red-600 font-semibold flex items-center gap-1"><XCircle className="w-4 h-4"/>BELUM SELESAI</span>}</td></tr>)}</tbody></table>
-          </div>
-        </section>
       </main>
     </div>
   );
